@@ -1,0 +1,6 @@
+{
+  "name": "司机智能排班系统",
+  "description": "专为物流司机设计的智能网页排班系统。支持自定义司机偏好、工作班次自动分配、手动点击修改多级联动重排、以及实时的合规性硬/软规则统计与审计。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
