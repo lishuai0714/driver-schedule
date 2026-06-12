@@ -5,6 +5,7 @@ import { DriverConfig } from './components/DriverConfig';
 import { RosterGrid } from './components/ScheduleGrid';
 import { StatsDashboard } from './components/StatsDashboard';
 import { AuditPanel } from './components/AuditPanel';
+import { DriveSyncPanel } from './components/DriveSyncPanel';
 import { 
   Users, 
   Settings2, 
@@ -543,6 +544,14 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* Google Drive Multi-device Sync Component */}
+                <DriveSyncPanel 
+                  drivers={drivers}
+                  onUpdateDrivers={setDrivers}
+                  locks={locks}
+                  onUpdateLocks={setLocks}
+                />
 
                 {/* Card 3: Dynamic tip block */}
                 <div className="bg-emerald-50/50 rounded-xl p-4 border border-emerald-100 flex items-start gap-2.5 shadow-sm">
