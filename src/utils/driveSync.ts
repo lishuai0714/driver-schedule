@@ -73,24 +73,43 @@ export const googleSignOut = async () => {
 
 /**
  * Searches for the driver_scheduler_backup.json file on user's Google Drive.
+ * Looks inside the target folder first, with a fallback to a general search.
  */
-export const findBackupFile = async (token: string): Promise<string | null> => {
+export const findBackupFile = async (
+  token: string,
+  folderId: string = '1RaWqQ7ekhBbxm8ENqsrZMQ_JRL0y1H-r'
+): Promise<string | null> => {
   try {
+    // 1. Try searching inside the target folder first
+    const folderQuery = `name='driver_scheduler_backup.json' and '${folderId}' in parents and trashed=false`;
     const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=name='driver_scheduler_backup.json' and trashed=false&fields=files(id,name)`,
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=files(id,name)`,
       {
         headers: { Authorization: `Bearer ${token}` },
       }
     );
-    if (!res.ok) {
-      const err = await res.text();
-      console.error('搜索云端备份文件失败:', err);
-      return null;
+    if (res.ok) {
+      const data = await res.json();
+      if (data.files && data.files.length > 0) {
+        return data.files[0].id;
+      }
     }
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      return data.files[0].id;
+
+    // 2. Fallback to a global search across Drive in case it's located elsewhere/root
+    const globalQuery = `name='driver_scheduler_backup.json' and trashed=false`;
+    const globalRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(globalQuery)}&fields=files(id,name)`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    if (globalRes.ok) {
+      const data = await globalRes.json();
+      if (data.files && data.files.length > 0) {
+        return data.files[0].id;
+      }
     }
+    
     return null;
   } catch (error) {
     console.error('搜索云端备份文件时发生未知错误:', error);
@@ -122,14 +141,20 @@ export const downloadBackupFromDrive = async (token: string, fileId: string): Pr
 };
 
 /**
- * Creates or updates the driver_scheduler_backup.json on Google Drive.
+ * Saves and uploads driver_scheduler_backup.json on Google Drive.
+ * Dynamically targets the designated folder or falls back if necessary.
  */
-export const saveBackupToDrive = async (token: string, content: any): Promise<boolean> => {
+export const saveBackupToDrive = async (
+  token: string,
+  content: any,
+  folderId: string = '1RaWqQ7ekhBbxm8ENqsrZMQ_JRL0y1H-r'
+): Promise<{ success: boolean; savedIntoTargetFolder: boolean; error?: string }> => {
   try {
-    const existingFileId = await findBackupFile(token);
+    // Check if there is already an existing backup file anywhere in the drive
+    const existingFileId = await findBackupFile(token, folderId);
 
     if (existingFileId) {
-      // Perform PATCH to update content
+      // Perform patch update to existing file content
       const res = await fetch(
         `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=media`,
         {
@@ -144,18 +169,19 @@ export const saveBackupToDrive = async (token: string, content: any): Promise<bo
       if (!res.ok) {
         const err = await res.text();
         console.error('更新云端备份文件失败:', err);
-        return false;
+        return { success: false, savedIntoTargetFolder: false, error: err };
       }
-      return true;
+      return { success: true, savedIntoTargetFolder: true };
     } else {
-      // Create new file with multipart body (metadata + media content)
-      const metadata = {
+      // Try to create the backup inside the user's requested folder
+      const metadataWithTarget = {
         name: 'driver_scheduler_backup.json',
         mimeType: 'application/json',
+        parents: [folderId],
       };
       
       const boundary = 'drive_scheduler_sync_boundary';
-      const bodyParts = [
+      const makeBody = (metadata: any) => [
         `--${boundary}`,
         'Content-Type: application/json; charset=UTF-8',
         '',
@@ -165,9 +191,9 @@ export const saveBackupToDrive = async (token: string, content: any): Promise<bo
         '',
         JSON.stringify(content),
         `--${boundary}--`
-      ];
-      
-      const res = await fetch(
+      ].join('\r\n');
+
+      let res = await fetch(
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
         {
           method: 'POST',
@@ -175,19 +201,44 @@ export const saveBackupToDrive = async (token: string, content: any): Promise<bo
             Authorization: `Bearer ${token}`,
             'Content-Type': `multipart/related; boundary=${boundary}`,
           },
-          body: bodyParts.join('\r\n'),
+          body: makeBody(metadataWithTarget),
         }
       );
-      
-      if (!res.ok) {
-        const err = await res.text();
-        console.error('创建云端备份文件失败:', err);
-        return false;
+
+      if (res.ok) {
+        return { success: true, savedIntoTargetFolder: true };
       }
-      return true;
+
+      // If posting into the specific folder failed (e.g., due to folder write restrictions),
+      // we fallback and create the backup directly in the user's "My Drive" (no parents specified)
+      console.warn('保存到特定文件夹权限受限，尝试备份到跟目录下...', await res.clone().text());
+      const fallbackMetadata = {
+        name: 'driver_scheduler_backup.json',
+        mimeType: 'application/json',
+      };
+
+      const fallbackRes = await fetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': `multipart/related; boundary=${boundary}`,
+          },
+          body: makeBody(fallbackMetadata),
+        }
+      );
+
+      if (!fallbackRes.ok) {
+        const err = await fallbackRes.text();
+        console.error('备份到主根目录依然失败:', err);
+        return { success: false, savedIntoTargetFolder: false, error: err };
+      }
+
+      return { success: true, savedIntoTargetFolder: false };
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('上传云端备份失败:', error);
-    return false;
+    return { success: false, savedIntoTargetFolder: false, error: error?.message || '未知异常' };
   }
 };

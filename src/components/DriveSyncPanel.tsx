@@ -155,18 +155,22 @@ export function DriveSyncPanel({
       version: '1.0'
     };
 
-    const success = await saveBackupToDrive(token, payload);
-    if (success) {
+    const result = await saveBackupToDrive(token, payload);
+    if (result.success) {
+      const folderMsg = result.savedIntoTargetFolder
+        ? '已保存至目标文件夹 (1RaWqQ7ekhBbxm8ENqsrZMQ_JRL0y1H-r)。'
+        : '保存至公共根文件夹 My Drive (目标文件夹写入受限)。';
+      
       setSyncStatus({
         type: 'success',
-        message: '数据已备份并保存至您的 Google Drive 云端。'
+        message: `数据已成功备份！${folderMsg}`
       });
       setLastSyncedTime(new Date().toLocaleString('zh-CN'));
       await checkCloudBackup(token);
     } else {
       setSyncStatus({
         type: 'error',
-        message: '同步到云端失败，请稍后重试。'
+        message: `同步到云端失败: ${result.error || '请稍后重试。'}`
       });
     }
     setSyncing(false);
@@ -321,7 +325,7 @@ export function DriveSyncPanel({
             </div>
 
             {/* Cloud Backup Found Status Indicators */}
-            <div className="text-[10px] text-zinc-400 space-y-1 bg-zinc-50/50 p-2 rounded-lg border border-zinc-100 border-dashed">
+            <div className="text-[10px] text-zinc-400 space-y-1.5 bg-zinc-50/50 p-2.5 rounded-lg border border-zinc-100 border-dashed">
               <div className="flex justify-between items-center">
                 <span>云端备份状态：</span>
                 <span className="font-semibold text-zinc-750">
@@ -334,6 +338,18 @@ export function DriveSyncPanel({
                   <span className="font-semibold text-zinc-750">{lastSyncedTime}</span>
                 </div>
               )}
+              <div className="flex flex-col gap-0.5 pt-1.5 border-t border-zinc-100 mt-1">
+                <span className="text-[9px] text-zinc-405">同步目标文件夹：</span>
+                <a 
+                  href="https://drive.google.com/drive/folders/1RaWqQ7ekhBbxm8ENqsrZMQ_JRL0y1H-r" 
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[9px] text-zinc-500 hover:text-zinc-800 underline truncate font-mono block"
+                  title="点击查看目标云端文件夹"
+                >
+                  1RaWqQ7ekhBbxm8ENqsrZMQ_JRL0y1H-r
+                </a>
+              </div>
             </div>
           </div>
         )}
