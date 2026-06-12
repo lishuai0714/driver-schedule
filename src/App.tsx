@@ -68,19 +68,32 @@ export default function App() {
 
   // --- Real-Time Roster Engine & Auditor ---
   // Calculates grid with memoization, reacting to locks and drivers settings in real-time
-  const grid = useMemo(() => {
-    return generateSchedule({
+  const { prevGrid, grid } = useMemo(() => {
+    const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+    const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+    
+    const prevG = generateSchedule({
+      drivers,
+      year: prevYear,
+      month: prevMonth,
+      locks,
+    });
+
+    const g = generateSchedule({
       drivers,
       year: currentYear,
       month: currentMonth,
       locks,
+      existingGrid: prevG,
     });
+
+    return { prevGrid: prevG, grid: g };
   }, [drivers, currentYear, currentMonth, locks]);
 
   // Audits the grid for core constraint violations dynamically
   const violations = useMemo(() => {
-    return auditSchedule(grid, drivers, currentYear, currentMonth);
-  }, [grid, drivers, currentYear, currentMonth]);
+    return auditSchedule(grid, drivers, currentYear, currentMonth, prevGrid);
+  }, [grid, drivers, currentYear, currentMonth, prevGrid]);
 
   const errorCount = violations.filter(v => v.type === 'error').length;
   const warningCount = violations.filter(v => v.type === 'warning').length;
@@ -153,7 +166,16 @@ export default function App() {
 
   const handleClearAllLocks = () => {
     if (confirm('确定要清空本月所有的手动修改，并全部恢复为智能自动排班吗？')) {
-      setLocks({});
+      setLocks((prev) => {
+        const next = { ...prev };
+        const prefix = `${currentYear}-${String(currentMonth).padStart(2, '0')}-`;
+        Object.keys(next).forEach(dateKey => {
+          if (dateKey.startsWith(prefix)) {
+            delete next[dateKey];
+          }
+        });
+        return next;
+      });
     }
   };
 
@@ -224,7 +246,6 @@ export default function App() {
               value={currentYear}
               onChange={(e) => {
                 setCurrentYear(Number(e.target.value));
-                setLocks({}); // Month change clears overrides
               }}
               className="bg-white text-zinc-800 border border-zinc-200 text-xs font-bold px-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-zinc-950 cursor-pointer text-center shadow-sm"
             >
@@ -238,7 +259,6 @@ export default function App() {
               value={currentMonth}
               onChange={(e) => {
                 setCurrentMonth(Number(e.target.value));
-                setLocks({});
               }}
               className="bg-white text-zinc-800 border border-zinc-200 text-xs font-bold px-3 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-zinc-950 cursor-pointer text-center shadow-sm"
             >

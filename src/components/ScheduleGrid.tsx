@@ -247,8 +247,8 @@ export const RosterGrid: React.FC<ScheduleGridProps> = ({
                           isPastDate
                             ? 'cursor-not-allowed bg-zinc-50/10'
                             : 'cursor-pointer hover:bg-zinc-100/30'
-                        } ${
-                          isActive ? 'outline-2 outline-zinc-805 z-10 shadow-md bg-zinc-100/40' : ''
+                        }  ${
+                          isActive ? 'outline-2 outline-zinc-805 z-30 shadow-md bg-zinc-100' : ''
                         }`}
                         title={isPastDate ? '历史班次，无法改动' : undefined}
                       >
@@ -272,7 +272,7 @@ export const RosterGrid: React.FC<ScheduleGridProps> = ({
                         {isActive && (
                           <div
                             ref={dropdownRef}
-                            className="absolute left-1/2 bottom-full mb-2 -translate-x-1/2 bg-white rounded-xl shadow-xl border border-zinc-200 p-2 z-40 w-44 space-y-1 text-left animate-fade-in"
+                            className="absolute left-1/2 top-full mt-2 -translate-x-1/2 bg-white rounded-xl shadow-xl border border-zinc-200 p-2 z-50 w-44 space-y-1 text-left animate-fade-in"
                           >
                             <div className="px-2 py-1 border-b border-zinc-100 mb-1">
                               <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">

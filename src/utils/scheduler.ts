@@ -211,8 +211,8 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
       const restsNeeded = Math.max(0, 2 - restsEarnedSoFar);
       const mustRest = restsNeeded >= remainingDaysInWeek;
 
-      // Cannot work if must rest, or if night shift yesterday (forced rule), OR if it is a mandatory rest day
-      const forcedRest = isPostNightShift || mustRest || isMandatoryRestDay || (isFixedRestDay && restsEarnedSoFar < 2);
+      // Cannot work if must rest, OR if it is a mandatory rest day
+      const forcedRest = mustRest || isMandatoryRestDay || (isFixedRestDay && restsEarnedSoFar < 2);
 
       return {
         driver: dr,
@@ -258,9 +258,9 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
         assignedToday.add(fiveTonOnlyDr.driver.id);
         neededFiveTon = 0;
       } else {
-        // Find another driver who is available
+        // Find another driver who is available (must not be post-night shift for 5-ton)
         const candidate = driverConstraints
-          .filter(c => !assignedToday.has(c.driver.id) && !c.driver.isFiveTonOnly)
+          .filter(c => !assignedToday.has(c.driver.id) && !c.driver.isFiveTonOnly && !c.isPostNightShift)
           .sort((a, b) => {
             // Prefer those who prefer working today over rest
             if (a.isFixedRestDay !== b.isFixedRestDay) {
@@ -298,10 +298,10 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
       }
     }
 
-    // Step D: Fulfill "EDM" Shift - Priority is balancing EDM shifts
+    // Step D: Fulfill "EDM" Shift - Priority is balancing EDM shifts (must not be post-night shift)
     if (neededEDM > 0) {
       const candidates = driverConstraints
-        .filter(c => !assignedToday.has(c.driver.id) && !c.driver.isFiveTonOnly)
+        .filter(c => !assignedToday.has(c.driver.id) && !c.driver.isFiveTonOnly && !c.isPostNightShift)
         .sort((a, b) => {
           // Rule 1: Prefer driver who is NOT on fixed rest day
           if (a.isFixedRestDay !== b.isFixedRestDay) {
@@ -318,10 +318,10 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
       }
     }
 
-    // Step E: Fulfill "白班 (Day Shift)"
+    // Step E: Fulfill "白班 (Day Shift)" (must not be post-night shift)
     if (neededDay > 0) {
       const candidates = driverConstraints
-        .filter(c => !assignedToday.has(c.driver.id) && !c.driver.isFiveTonOnly)
+        .filter(c => !assignedToday.has(c.driver.id) && !c.driver.isFiveTonOnly && !c.isPostNightShift)
         .sort((a, b) => {
           if (a.isFixedRestDay !== b.isFixedRestDay) {
             return a.isFixedRestDay ? 1 : -1;
@@ -337,9 +337,18 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
     }
 
     // Step F: Fill remaining unassigned drivers
-    // "除了司机强制休息的规定，尽量让每个司机每周都排5天班。多出来的班次先排成白班。"
+    // "除了司机强制休息的规定，尽量让每个司机每周都排5天班。多出来的班次先排成白班。每天最多2个白班和2个EDM。"
     // Let's find remaining drivers who are not yet assigned today.
     const remainingCandidates = driverConstraints.filter(c => !assignedToday.has(c.driver.id));
+
+    // Calculate current schedule status today:
+    let totalDayShifts = 0;
+    let totalEDMShifts = 0;
+    drivers.forEach(dr => {
+      const shift = grid[dateKey][dr.id];
+      if (shift === '白班') totalDayShifts++;
+      if (shift === 'EDM') totalEDMShifts++;
+    });
 
     remainingCandidates.forEach(c => {
       const dr = c.driver;
@@ -359,9 +368,17 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
         // Let them rest on preferred rest days or if they absolutely must rest in the remaining days of the week
         assignShift(dr.id, '休息');
       } else {
-        // Otherwise, schedule them to work to target exactly 5 working days (and exactly 2 rest days)
-        // prioritized as "白班" as requested.
-        assignShift(dr.id, '白班');
+        // Otherwise, they want to work to target 5 working days. But we must respect the max limits of 2 Day and 2 EDM shifts.
+        if (totalDayShifts < 2) {
+          assignShift(dr.id, '白班');
+          totalDayShifts++;
+        } else if (totalEDMShifts < 2) {
+          assignShift(dr.id, 'EDM');
+          totalEDMShifts++;
+        } else {
+          // If we can't schedule either Day or EDM because both are at max (2), they have to rest
+          assignShift(dr.id, '休息');
+        }
       }
       assignedToday.add(dr.id);
     });
@@ -385,7 +402,8 @@ export function auditSchedule(
   grid: ScheduleGrid,
   drivers: Driver[],
   year: number,
-  month: number
+  month: number,
+  existingGrid?: ScheduleGrid
 ): RuleViolation[] {
   const violations: RuleViolation[] = [];
   const days = getDaysInMonth(year, month);
@@ -448,7 +466,22 @@ export function auditSchedule(
       });
     }
 
-    // No extra shift warnings are required now, as extra shifts are intentionally prioritized as Day shifts to achieve the 5-day work week quota.
+    if (dayCount > 2) {
+      violations.push({
+        id: `daily-day-extra-${dateKey}`,
+        type: 'error',
+        date: dateKey,
+        message: `${dayName} 安排了超过2个白班（当前已有 ${dayCount} 个，多于每天最多2个的限制）`
+      });
+    }
+    if (edmCount > 2) {
+      violations.push({
+        id: `daily-edm-extra-${dateKey}`,
+        type: 'error',
+        date: dateKey,
+        message: `${dayName} 安排了超过2个EDM（当前已有 ${edmCount} 个，多于每天最多2个的限制）`
+      });
+    }
   });
 
   // 2. Audit Individual Driver Constraints:
@@ -457,6 +490,27 @@ export function auditSchedule(
     // "晚班之后只能休息"
     // "要求每个司机每周固定休息2天"
     
+    // Check transition from previous month to first day of current month
+    if (existingGrid && totalDays > 0) {
+      const firstDay = days[0];
+      const prevDate = new Date(firstDay.getTime() - 86400000);
+      const prevKey = formatDateKey(prevDate);
+      const firstKey = formatDateKey(firstDay);
+
+      const prevShift = existingGrid[prevKey]?.[dr.id];
+      const firstShift = grid[firstKey]?.[dr.id];
+
+      if (prevShift === '夜班' && firstShift !== '休息' && firstShift !== '夜班' && firstShift !== undefined) {
+        violations.push({
+          id: `night-rest-${dr.id}-transition-${prevKey}`,
+          type: 'error',
+          date: firstKey,
+          driverId: dr.id,
+          message: `${dr.name} 在跨月的前一天 (${prevDate.getMonth() + 1}月${prevDate.getDate()}日) 排了夜班，但本月1号 (${firstDay.getDate()}号) 排的是「${firstShift}」。夜班之后只能是夜班或休息！`
+        });
+      }
+    }
+
     // Check consecutive days for Night -> Rest
     for (let i = 0; i < totalDays - 1; i++) {
       const currentDay = days[i];
@@ -467,13 +521,13 @@ export function auditSchedule(
       const currentShift = grid[currentKey]?.[dr.id];
       const nextShift = grid[nextKey]?.[dr.id];
 
-      if (currentShift === '夜班' && nextShift !== '休息' && nextShift !== undefined) {
+      if (currentShift === '夜班' && nextShift !== '休息' && nextShift !== '夜班' && nextShift !== undefined) {
         violations.push({
           id: `night-rest-${dr.id}-${currentKey}`,
           type: 'error',
           date: nextKey,
           driverId: dr.id,
-          message: `${dr.name} 在 ${currentDay.getDate()}号 排了夜班，但 ${nextDay.getDate()}号 排的是「${nextShift}」，夜班后必须休息！`
+          message: `${dr.name} 在 ${currentDay.getDate()}号 排了夜班，但 ${nextDay.getDate()}号 排的是「${nextShift}」。夜班之后只能是夜班或休息，不能安排白班、EDM或5吨班！`
         });
       }
     }
@@ -519,8 +573,15 @@ export function auditSchedule(
       let outsideRests = 0;
       calendarWeekDays.forEach(d => {
         if (d.getMonth() !== firstDay.getMonth()) {
-          if (dr.fixedRestDays.includes(d.getDay()) || (dr.mandatoryRestDays || []).includes(d.getDay())) {
-            outsideRests++;
+          const dKey = formatDateKey(d);
+          if (existingGrid && existingGrid[dKey]?.[dr.id] !== undefined) {
+            if (existingGrid[dKey]?.[dr.id] === '休息') {
+              outsideRests++;
+            }
+          } else {
+            if (dr.fixedRestDays.includes(d.getDay()) || (dr.mandatoryRestDays || []).includes(d.getDay())) {
+              outsideRests++;
+            }
           }
         }
       });
