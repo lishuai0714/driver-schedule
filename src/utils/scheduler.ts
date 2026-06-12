@@ -248,9 +248,9 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
 
     // Step B: Fulfill "5吨 (5-Ton)" Requirement
     if (neededFiveTon > 0) {
-      // Is there a 5-ton-only driver who is available and not assigned rest?
+      // Is there a 5-ton-only driver who is available and not assigned rest? (Must not be post-night shift)
       const fiveTonOnlyDr = driverConstraints.find(
-        c => c.driver.isFiveTonOnly && !assignedToday.has(c.driver.id)
+        c => c.driver.isFiveTonOnly && !assignedToday.has(c.driver.id) && !c.isPostNightShift
       );
       
       if (fiveTonOnlyDr) {
@@ -355,6 +355,14 @@ export function generateSchedule({ drivers, year, month, locks, existingGrid }: 
       if (dr.isFiveTonOnly) {
         // 5-ton-only driver can only work 5-ton or rest. Today we've met 5-ton if scheduled,
         // or if not scheduled, they rest. Since they can't do anything else, assign Rest.
+        assignShift(dr.id, '休息');
+        assignedToday.add(dr.id);
+        return;
+      }
+
+      // If post night shift, they CANNOT work Day (白班) or EDM shifts.
+      // Since they are in Step F (unscheduled so far) and cannot work Day or EDM, they MUST rest.
+      if (c.isPostNightShift) {
         assignShift(dr.id, '休息');
         assignedToday.add(dr.id);
         return;
