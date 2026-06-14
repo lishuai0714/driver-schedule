@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "schedule": {
+      "title": "Collaborative Schedule Config",
+      "description": "Full roster configuration stored per passcode document ID",
+      "type": "object",
+      "properties": {
+        "passcode": {
+          "type": "string",
+          "description": "User custom access passcode"
+        },
+        "drivers": {
+          "type": "array",
+          "description": "List of driver details"
+        },
+        "locks": {
+          "type": "object",
+          "description": "Key-value of locked shifts coordinates"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last updated Firestore server timestamp"
+        }
+      },
+      "required": [
+        "passcode",
+        "drivers",
+        "locks",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "schedules/{passcode}": {
+      "schema": "schedule",
+      "description": "Schedules partitioned by passcode document IDs"
+    }
+  }
+}

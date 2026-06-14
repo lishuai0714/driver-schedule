@@ -14,6 +14,7 @@ interface ScheduleGridProps {
   violationsCount: number;
   onYearChange?: (year: number) => void;
   onMonthChange?: (month: number) => void;
+  isAuthorized?: boolean;
 }
 
 export const RosterGrid: React.FC<ScheduleGridProps> = ({
@@ -27,6 +28,7 @@ export const RosterGrid: React.FC<ScheduleGridProps> = ({
   violationsCount,
   onYearChange,
   onMonthChange,
+  isAuthorized = true,
 }) => {
   const days = getDaysInMonth(year, month);
   const [activeCell, setActiveCell] = useState<{ dateKey: string; driverId: string } | null>(null);
@@ -241,6 +243,10 @@ export const RosterGrid: React.FC<ScheduleGridProps> = ({
                         key={dr.id}
                         onClick={() => {
                           if (isPastDate) return;
+                          if (!isAuthorized) {
+                            alert('当前处于安全只读模式，无法手工干预排班。请首先输入页面主栏上方的“编辑密码”解锁！');
+                            return;
+                          }
                           setActiveCell({ dateKey, driverId: dr.id });
                         }}
                         className={`p-1.5 border-r border-zinc-200 text-center relative select-none transition-all ${

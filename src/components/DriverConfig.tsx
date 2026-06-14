@@ -6,9 +6,10 @@ import { User, ToggleLeft, ToggleRight, CalendarDays, Edit, Trash2, Plus, Info }
 interface DriverConfigProps {
   drivers: Driver[];
   onUpdateDrivers: (drivers: Driver[]) => void;
+  isAuthorized?: boolean;
 }
 
-export const DriverConfig: React.FC<DriverConfigProps> = ({ drivers, onUpdateDrivers }) => {
+export const DriverConfig: React.FC<DriverConfigProps> = ({ drivers, onUpdateDrivers, isAuthorized = true }) => {
   const [editingDriverId, setEditingDriverId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editFiveTonOnly, setEditFiveTonOnly] = useState(false);
@@ -16,6 +17,10 @@ export const DriverConfig: React.FC<DriverConfigProps> = ({ drivers, onUpdateDri
   const [editMandatoryRestDays, setEditMandatoryRestDays] = useState<number[]>([]);
 
   const handleStartEdit = (driver: Driver) => {
+    if (!isAuthorized) {
+      alert('当前处于安全只读模式下，无法编辑司机属性。请首先在页面上方“安全编辑锁”中输入正确的编辑密码解锁！');
+      return;
+    }
     setEditingDriverId(driver.id);
     setEditName(driver.name);
     setEditFiveTonOnly(driver.isFiveTonOnly);
@@ -68,6 +73,10 @@ export const DriverConfig: React.FC<DriverConfigProps> = ({ drivers, onUpdateDri
   };
 
   const handleAddDriver = () => {
+    if (!isAuthorized) {
+      alert('当前处于安全只读模式下，无法添加新司机。请首先在页面上方“安全编辑锁”中输入正确的编辑密码解锁！');
+      return;
+    }
     const nextNum = drivers.length + 1;
     const newDriver: Driver = {
       id: `driver-${Date.now()}`,
@@ -81,6 +90,10 @@ export const DriverConfig: React.FC<DriverConfigProps> = ({ drivers, onUpdateDri
   };
 
   const handleDeleteDriver = (id: string) => {
+    if (!isAuthorized) {
+      alert('当前处于安全只读模式下，无法删除司机。请首先在页面上方“安全编辑锁”中输入正确的编辑密码解锁！');
+      return;
+    }
     if (drivers.length <= 4) {
       alert('为了保证日常班次（白、夜、EDM、5吨）最基本的人力需求，系统至少需要保留4名司机。');
       return;

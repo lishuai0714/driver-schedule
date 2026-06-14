@@ -1,11 +1,15 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Driver, ScheduleGrid, ManualLocks, ShiftCategory } from './types';
 import { generateSchedule, auditSchedule, getDaysInMonth, formatDateKey, WEEKDAYS_CN } from './utils/scheduler';
 import { DriverConfig } from './components/DriverConfig';
 import { RosterGrid } from './components/ScheduleGrid';
 import { StatsDashboard } from './components/StatsDashboard';
 import { AuditPanel } from './components/AuditPanel';
-import { DriveSyncPanel } from './components/DriveSyncPanel';
+import { 
+  saveScheduleToFirestore, 
+  subscribeToScheduleFirestore, 
+  sanitizePasscode 
+} from './utils/firebase';
 import { 
   Users, 
   Settings2, 
@@ -19,7 +23,11 @@ import {
   BookOpen,
   CheckCircle,
   HelpCircle,
-  LayoutGrid
+  LayoutGrid,
+  Lock,
+  Unlock,
+  Key,
+  Check
 } from 'lucide-react';
 
 const DEFAULT_DRIVERS: Driver[] = [
@@ -36,6 +44,19 @@ const DEFAULT_DRIVERS: Driver[] = [
 ];
 
 export default function App() {
+  const isAuthorized = true;
+
+  // --- Dynamic Collaboration State Hooks ---
+  const [passcode, setPasscode] = useState<string>(() => {
+    return localStorage.getItem('scheduler_cloud_passcode') || '';
+  });
+  const [tempPasscode, setTempPasscode] = useState<string>('');
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'saved' | 'error'>('idle');
+  const [syncError, setSyncError] = useState<string>('');
+
+  const lastSyncedData = useRef<{ drivers: Driver[]; locks: ManualLocks } | null>(null);
+
   // --- Persistent State Hooks ---
   const [drivers, setDrivers] = useState<Driver[]>(() => {
     const cached = localStorage.getItem('scheduler_drivers');
@@ -58,7 +79,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'grid' | 'drivers' | 'stats' | 'rules'>('grid');
   const [showHelp, setShowHelp] = useState<boolean>(true);
 
-  // Save states to localStorage when updated
+  // Save states to localStorage when updated (local fallback caching)
   useEffect(() => {
     localStorage.setItem('scheduler_drivers', JSON.stringify(drivers));
   }, [drivers]);
@@ -66,6 +87,99 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('scheduler_locks', JSON.stringify(locks));
   }, [locks]);
+
+  // Real-Time 2-Way Firestore Collaboration Engine
+  useEffect(() => {
+    if (!passcode) {
+      setIsConnected(false);
+      setSyncStatus('idle');
+      return;
+    }
+
+    setSyncStatus('syncing');
+    setIsConnected(false);
+
+    // Subscribe to current passcode layout inside Firestore
+    const unsubscribe = subscribeToScheduleFirestore(
+      passcode,
+      (data) => {
+        if (data.drivers && data.drivers.length > 0) {
+          // Document exists and has data: Sync from cloud to React!
+          lastSyncedData.current = { drivers: data.drivers, locks: data.locks };
+          setDrivers(data.drivers);
+          setLocks(data.locks);
+        } else {
+          // Document is brand new/empty: Let's automatically publish current local layout to seed it
+          saveScheduleToFirestore(passcode, drivers, locks)
+            .then(() => {
+              lastSyncedData.current = { drivers, locks };
+            })
+            .catch((err) => {
+              console.error("Failed to seed new passcode layout:", err);
+            });
+        }
+        setIsConnected(true);
+        setSyncStatus('saved');
+        setSyncError('');
+      },
+      (error) => {
+        console.error("Realtime subscription failed:", error);
+        setSyncStatus('error');
+        setSyncError('网络连接异常，建议确认配置后再试');
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [passcode]);
+
+  // Auto-Save modifications to Cloud on local edits
+  useEffect(() => {
+    if (!passcode || !isConnected) return;
+
+    // Check if current React states are already identical to the last synced state
+    const isIdentical = lastSyncedData.current &&
+      JSON.stringify(lastSyncedData.current.drivers) === JSON.stringify(drivers) &&
+      JSON.stringify(lastSyncedData.current.locks) === JSON.stringify(locks);
+
+    if (isIdentical) return;
+
+    setSyncStatus('syncing');
+    const timer = setTimeout(() => {
+      saveScheduleToFirestore(passcode, drivers, locks)
+        .then((success) => {
+          if (success) {
+            lastSyncedData.current = { drivers, locks };
+            setSyncStatus('saved');
+          } else {
+            setSyncStatus('error');
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to save changes to Firestore:", err);
+          setSyncStatus('error');
+        });
+    }, 600); // 600ms debounce to squash fast sequential updates like typing names
+
+    return () => clearTimeout(timer);
+  }, [drivers, locks, passcode, isConnected]);
+
+  // Disconnect from cloud channel and enter local standalone mode
+  const handleDisconnectCloud = () => {
+    if (confirm('确定要断开当前的云端协同连接，回到本地独立排班模式吗？当前在云端已存的排班不会丢失。')) {
+      localStorage.removeItem('scheduler_cloud_passcode');
+      setPasscode('');
+      setIsConnected(false);
+      setSyncStatus('idle');
+      
+      // Load previous local backups or fallback to the current content
+      const cachedDr = localStorage.getItem('scheduler_drivers');
+      const cachedLk = localStorage.getItem('scheduler_locks');
+      if (cachedDr) setDrivers(JSON.parse(cachedDr));
+      if (cachedLk) setLocks(JSON.parse(cachedLk));
+    }
+  };
 
   // --- Real-Time Roster Engine & Auditor ---
   // Calculates grid with memoization, reacting to locks and drivers settings in real-time
@@ -144,6 +258,10 @@ export default function App() {
 
   // --- Controller Handlers ---
   const handleCellOverride = (dateKey: string, driverId: string, shift: ShiftCategory | null) => {
+    if (!isAuthorized) {
+      alert('当前处于只读模式。请在页面主栏上方输入正确的“安全编辑码”解锁后再进行修改。');
+      return;
+    }
     setLocks((prev) => {
       const next = { ...prev };
       if (shift === null) {
@@ -166,6 +284,10 @@ export default function App() {
   };
 
   const handleClearAllLocks = () => {
+    if (!isAuthorized) {
+      alert('当前处于只读模式。请在页面主栏上方输入正确的“安全编辑码”解锁后再进行修改。');
+      return;
+    }
     if (confirm('确定要清空本月所有的手动修改，并全部恢复为智能自动排班吗？')) {
       setLocks((prev) => {
         const next = { ...prev };
@@ -207,6 +329,10 @@ export default function App() {
 
   // Quick reset to default settings
   const handleResetToDefaults = () => {
+    if (!isAuthorized) {
+      alert('当前处于只读模式。请在页面主栏上方输入正确的“安全编辑码”解锁后再进行重置。');
+      return;
+    }
     if (confirm('确认重置吗？这将清空所有自定义司机设置、偏好、以及手动锁定班次。')) {
       localStorage.removeItem('scheduler_drivers');
       localStorage.removeItem('scheduler_locks');
@@ -289,6 +415,108 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Multi-user Collaborative Sync Control Bar */}
+      <div className="bg-white border-b border-zinc-200/80 py-3 px-6 md:px-8 shadow-sm">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className={`p-2.5 rounded-xl flex items-center justify-center transition-all ${
+              isConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-zinc-100/80 text-zinc-500'
+            }`}>
+              <Key className={`w-4 h-4 ${isConnected ? 'animate-pulse' : ''}`} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-zinc-900">
+                  {isConnected ? '已启用云端协同排班' : '离线单机模式'}
+                </span>
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold transition-all ${
+                  isConnected ? 'bg-emerald-50 text-emerald-700 border border-emerald-250' : 'bg-zinc-100 text-zinc-500'
+                }`}>
+                  {isConnected ? '实时同步中' : '仅在浏览器本地保存'}
+                </span>
+              </div>
+              <p className="text-[10px] text-zinc-500 mt-0.5">
+                {isConnected 
+                  ? '使用同一个协同密码的团队成员共享同一套排班。任何人在任何设备上的修改都会实时同步。'
+                  : '添加一个协同密码，可一键连接或创建专用的云端排班系统，免注册直接多人协同修改。'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {isConnected ? (
+              <div className="flex items-center gap-3 bg-zinc-50 border border-zinc-200 rounded-lg px-3.5 py-1.5 shadow-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">协同密码:</span>
+                  <span className="text-xs font-mono font-bold text-zinc-900 bg-zinc-100 px-2 py-0.5 rounded tracking-wide border border-zinc-200/50">{passcode}</span>
+                </div>
+                <div className="h-3 w-px bg-zinc-200"></div>
+
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500 min-w-[75px]">
+                  {syncStatus === 'syncing' ? (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping"></span>
+                      <span className="text-blue-600">同步写入中...</span>
+                    </>
+                  ) : syncStatus === 'saved' ? (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                      <span className="text-emerald-600">云端已同步</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                      <span className="text-rose-600">同步失败</span>
+                    </>
+                  )}
+                </div>
+
+                <div className="h-3 w-px bg-zinc-200"></div>
+                <button
+                  onClick={handleDisconnectCloud}
+                  className="text-[10px] font-bold text-zinc-500 hover:text-rose-600 underline hover:no-underline cursor-pointer"
+                  title="注销后回到浏览器本地缓存模式"
+                >
+                  退出协同
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2.5">
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="请输入自定义协同密码 (例如 ryanshift)"
+                    value={tempPasscode}
+                    onChange={(e) => setTempPasscode(e.target.value.replace(/[^a-zA-Z0-9_\-]/g, ''))}
+                    className="bg-white border border-zinc-200 text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:ring-1 focus:ring-zinc-950 w-64 text-left shadow-sm font-mono tracking-wide"
+                    maxLength={20}
+                  />
+                  {tempPasscode.length > 0 && tempPasscode.length < 3 && (
+                    <span className="absolute -bottom-4 left-1 text-[8px] text-zinc-400">长度应大于等于3位</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    const cleaned = tempPasscode.trim().toLowerCase();
+                    if (cleaned.length < 3) {
+                      alert('协同密码必须包含至少 3 位字母或数字！');
+                      return;
+                    }
+                    localStorage.setItem('scheduler_cloud_passcode', cleaned);
+                    setPasscode(cleaned);
+                    setTempPasscode('');
+                  }}
+                  className="bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all cursor-pointer shadow-sm flex items-center gap-1 shrink-0"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  连接协同
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Main Body Layout */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8 flex flex-col gap-5">
@@ -439,6 +667,7 @@ export default function App() {
                   violationsCount={violations.length}
                   onYearChange={setCurrentYear}
                   onMonthChange={setCurrentMonth}
+                  isAuthorized={isAuthorized}
                 />
                 
                 {/* Usage Tips panel below */}
@@ -545,13 +774,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Google Drive Multi-device Sync Component */}
-                <DriveSyncPanel 
-                  drivers={drivers}
-                  onUpdateDrivers={setDrivers}
-                  locks={locks}
-                  onUpdateLocks={setLocks}
-                />
+
 
                 {/* Card 3: Dynamic tip block */}
                 <div className="bg-emerald-50/50 rounded-xl p-4 border border-emerald-100 flex items-start gap-2.5 shadow-sm">
@@ -575,6 +798,7 @@ export default function App() {
               <DriverConfig
                 drivers={drivers}
                 onUpdateDrivers={setDrivers}
+                isAuthorized={isAuthorized}
               />
             </div>
           )}
